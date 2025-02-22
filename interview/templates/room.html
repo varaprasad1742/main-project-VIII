@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Video Interview Room</title>
+    <style>
+        #videos {
+            display: flex;
+        }
+        video {
+            width: 320px;
+            height: 240px;
+            margin: 10px;
+            border: 1px solid black;
+        }
+    </style>
+</head>
+<body>
+    <h1>Video Interview Room</h1>
+    <p>Room ID: <span id="room-id-display">{{ room_id_display }}</span></p>
+    <div id="videos">
+        <video id="localVideo" autoplay muted playsinline></video>
+        <video id="remoteVideo" autoplay playsinline></video>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
+    <script>
+        const roomId = "{{ room_id }}";
+        const createRoom = {{ create|lower }};
+        const localVideo = document.getElementById('localVideo');
+        const remoteVideo = document.getElementById('remoteVideo');
+        const roomIdDisplayElement = document.getElementById('room-id-display');
+
+        let localStream;
+        let remoteStream;
+        let peerConnection;
+        const socket = io();
+        const username = 'User-' + Math.floor(Math.random() * 1000;
+
+        socket.on('connect', () => {
+            console.log('Connected to signaling server');
+            socket.emit('join', { room_id: roomId, username: username });
+        });
+
+        socket.on('user_join', (data) => {
+            console.log(data.username + ' joined the room. User count: ' + data.count);
+            if (data.count === 2 && !createRoom) {
+                createOffer();
+            }
+        });
+
+        socket.on('user_leave', (data) => {
+            console.log(data.username + ' left the room.');
+            closePeerConnection();
+        });
+
+        socket.on('room_full', () => {
+            alert("Room is full or does not exist.");
+            window.location.href = '/';
+        });
+
+        socket.on('message', async message => {
+            if (message.type === 'offer') {
+                console.log('Received offer...');
+                handleOffer(message);
+            } else if (message.type === 'answer') {
+                console.log('Received answer...');
+                handleAnswer(message);
+            } else if (message.type === 'ice-candidate') {
+                console.log('Received ICE candidate...');
+                handleIceCandidate(message);
+            }
+        });
+
+        async function getLocalMediaStream() {
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+                localVideo.srcObject = localStream;
+            } catch (error) {
+                console.error('Error accessing media devices.', error);
+                alert('Could not access local media devices. Please check permissions.');
+            }
+        }
+
+        async function createPeerConnection() {
+            peerConnection = new RTCPeerConnection({
+                iceServers: []
+            });
+
+            peerConnection.onicecandidate = handleICECandidateEvent;
+            peerConnection.ontrack = handleTrackEvent;
+            peerConnection.oniceconnectionstatechange = handleICEConnectionStateChangeEvent;
+            peerConnection.onicegatheringstatechange = handleICEGatheringStateChangeEvent;
+            peerConnection.onsignalingstatechange = handleSignalingStateChangeEvent;
+
+            localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+        }
+
+        async function createOffer() {
+            console.log('Creating offer...');
+            await createPeerConnection();
+            const offer = await peerConnection.createOffer();
+            await peerConnection.setLocalDescription(offer);
+            sendSignal({ type: 'offer', sdp: offer.sdp, room_id: roomId });
+        }
+
+        async function handleOffer(message) {
+            console.log('Handling offer...');
+            if (!peerConnection) {
+                await createPeerConnection();
+            }
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(message));
+            const answer = await peerConnection.createAnswer();
+            await peerConnection.setLocalDescription(answer);
+            sendSignal({ type: 'answer', sdp: answer.sdp, room_id: roomId });
+        }
+
+        async function handleAnswer(message) {
+            console.log('Handling answer...');
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(message));
+        }
+
+        async function handleIceCandidate(message) {
+            try {
+                await peerConnection.addIceCandidate(new RTCIceCandidate(message.candidate));
+            } catch (e) {
+                console.error('Error adding received ice candidate', e);
+            }
+        }
+
+        function handleICECandidateEvent(event) {
+            if (event.candidate) {
+                sendSignal({
+                    type: 'ice-candidate',
+                    candidate: event.candidate,
+                    room_id: roomId
+                });
+            }
+        }
+
+        function handleTrackEvent(event) {
+            console.log('Track event received');
+            if (!remoteVideo.srcObject) {
+                remoteStream = new MediaStream();
+                remoteVideo.srcObject = remoteStream;
+            }
+            remoteStream.addTrack(event.track, remoteStream);
+        }
+
+        function handleICEConnectionStateChangeEvent(event) {
+            console.log('ICE connection state change: ', peerConnection.iceConnectionState);
+            if (peerConnection.iceConnectionState === 'failed' ||
+                peerConnection.iceConnectionState === 'closed' ||
+                peerConnection.iceConnectionState === 'disconnected') {
+                    closePeerConnection();
+            }
+        }
+
+        function handleICEGatheringStateChangeEvent(event) {
+            console.log('ICE gathering state change: ', peerConnection.iceGatheringState);
+        }
+
+        function handleSignalingStateChangeEvent(event) {
+            console.log('WebRTC signaling state change: ', peerConnection.signalingState);
+        }
+
+        function sendSignal(message) {
+            message.room_id = roomId;
+            socket.emit('message', message);
+        }
+
+        function closePeerConnection() {
+            if (peerConnection) {
+                console.log('Closing peer connection');
+                peerConnection.close();
+                peerConnection = null;
+            }
+        }
+
+        window.addEventListener('beforeunload', () => {
+            socket.emit('leave', { room_id: roomId, username: username });
+        });
+
+        getLocalMediaStream();
+        if (createRoom) {
+            createPeerConnection();
+        }
+
+    </script>
+</body>
+</html>
